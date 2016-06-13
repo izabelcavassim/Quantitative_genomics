@@ -1,0 +1,342 @@
+---
+title: "GWAS for genomic prediction"
+author: "M Izabel"
+date: "May 15, 2016"
+output: word_document
+---
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+dat = read.table("http://www.bayz.biz/mouse_allgeno.txt", header = T)
+dat_train = dat[dat$CV1 == 1, ]
+dat_test = dat[dat$CV1 == 2, ]
+geno_train = dat_train[, 9:1821]
+geno_test = dat_test[, 9:1821]
+map = read.table("http://www.bayz.biz/mousesnps.map",header=F)
+
+# The real variance of the data is:
+#The real variance of the data
+var(dat$BW, na.rm= T)
+```
+
+The data is produced by mouse, the phenotypic distribution is:
+
+```{r, echo=FALSE}
+hist(dat$BW, main = 'Distribution of Mouse Body weigth', breaks=20, xlab = 'Weigth' )
+```
+
+Using Marker Assisted Approach to do prediction:
+
+1. Check the basic working of GWAS by fitting the first SNP:
+```{r}
+fit = lm(dat_train$BW~geno_train$V2)
+summary(fit)
+```
+
+2. To automate GWAS make the following function in R for gwas on BW:
+```{r}
+gwas_BW = function(x){fit=lm(dat_train$BW~x)
+summary(fit)$coefficients[2,]}
+gwas_BW_results = t(apply(geno_train,2,gwas_BW))
+```
+
+5. Take the SNPs with p-value below 2.7e-5 and store their row-numbers and effects
+```{r}
+snp_select = which(gwas_BW_results[,4] < 2.7e-5)
+gwas_BW_results[snp_select,] # just 7 snps were considered to have significant effect
+```
+
+Producing Manhattan plot
+```{r, echo=FALSE}
+require(qqman)
+manhattan_plot = cbind(map[,c(3,2,5)], gwas_BW_results[,4])
+colnames(manhattan_plot) <- c("SNP", "CHR", "BP", "P")  
+
+#How many SNPs on each chromosome?
+plot(as.data.frame(table(manhattan_plot$CHR)), main = 'Number of SNPs per chromosome')
+#boring version
+manhattan(manhattan_plot, main= 'Manhattan plot of GWAS p-values')
+
+qq(manhattan_plot$P, main = "Q-Q plot of GWAS p-values")
+
+```
+
+6. Compute predictions in the test data using the SNP effects from the training data by
+```{r}
+#multiplying that with the test genotypes:
+gebv_test = as.matrix(geno_test[, snp_select]) %*% gwas_BW_results[snp_select,1]
+
+#Fitting all the significant snps in the regression to see what happens
+fit_all_significant_snps = lm(dat_train$BW~ geno_train$V694 + geno_train$V1028 + geno_train$V1030 + geno_train$V1031 + geno_train$V1034 + geno_train$V1101 + geno_train$V1140 )
+summary(fit_all_significant_snps)
+#There are redundancies in the model, just from their numbers it is possible to see that some are close phisically
+```
+
+7. Do the same for larger sets of SNPs by taking higher thresholds for the p-value
+```{r}
+
+# threshold of 0.01 0.01/1813 = 5.51572e-06
+
+snp_select_0.01 = which(gwas_BW_results[,4] < 5.51e-06)
+gebv_test_0.01 = as.matrix(geno_test[, snp_select_0.01]) %*% gwas_BW_results[snp_select_0.01,1]
+
+# threshold of 0.1 0.1/1813 = 5.51572e-05
+snp_select_0.1 = which(gwas_BW_results[,4] < 5.51e-05)
+gebv_test_0.1 = as.matrix(geno_test[, snp_select_0.1])  %*% gwas_BW_results[snp_select_0.1,1]
+
+#The genetic variance explained (R squared) of the training data
+#2pqb^2
+
+p = as.vector(colMeans(geno_train,na.rm=T)/2)
+q = 1- p
+# of all the snps:
+R_squared = as.vector(2*p*q*(gwas_BW_results[,1]^2))
+sum(R_squared) # Overestimating the SNP effect
+
+#of the sinificant snps:
+snp_select_var = 2 * p[snp_select] * (q[snp_select]) * (gwas_BW_results[snp_select, 1])^2
+sum(snp_select_var)
+
+#The genetic variance explained of the test data depending on the threshold
+cor(dat_test$BW, gebv_test_0.1, use = 'pair') #alpha = 0.1
+
+cor(dat_test$BW, gebv_test, use = 'pair') # alpha = 0.05
+
+cor(dat_test$BW, gebv_test_0.01, use = 'pair') #alhpa = 0.01
+```
+
+# Second part: using factors
+
+```{r}
+# Making a model with more variables: sex and batch
+
+gwas_BW_factor = function(x){fit = lm(dat_train$BW ~ x + factor(dat_train$Sex) + factor(dat_train$batch))
+  summary(fit)$coefficients[2,]}
+gwas_BW_results = t(apply(geno_train,2,gwas_BW_factor))
+
+# Acessing the significant snps:
+snp_select = which(gwas_BW_results[,4] < 2.7e-5) # 5% of significance
+
+gebv_test_sex = as.matrix(geno_test[, snp_select]) %*% gwas_BW_results[snp_select,1]
+snp_select_0.01 = which(gwas_BW_results[,4] < 5.51e-06)
+gebv_test_0.01 = as.matrix(geno_test[, snp_select_0.01]) %*% gwas_BW_results[snp_select_0.01,1]
+
+# Thw correlation increases between the real test data and the predicted one
+# should increase a little bit after controlling for batch and sex
+cor(dat_test$BW, gebv_test_0.01, use = 'pair')
+
+manhattan_plot = cbind(map[,c(3,2,5)], gwas_BW_results[,4])
+colnames(manhattan_plot) <- c("SNP", "CHR", "BP", "P")  
+manhattan(manhattan_plot, main= 'Manhattan plot of GWAS p-values')
+qq(manhattan_plot$P, main = "Q-Q plot of GWAS p-values")
+```
+
+# Third part: treating snps as random effects
+As we saw previously, models that count for one snp each of the time may overestimate the snp effects and consequently the prediction of the genetic variance. Another approach that can be used is mixed models, which oFor this purpose we are going to use the package BGLR. 
+
+```{r}
+# BGLR doesn't accept missing genotypes; this is a quick code that centers and
+# replaces missing genotypes with the mean genotype; it will be discussed in detail on Day 3.
+# It makes a 'geno_noNA' table that can be used in BGLR.
+geno_train_noNA = t(geno_train) - colMeans(geno_train, na.rm = T)
+geno_train_noNA[is.na(geno_train_noNA)] = 0
+geno_train_noNA = t(geno_train_noNA)
+
+# also make "noNA" version of test genotypes; it avoids that predicted GEBV fall out
+# due to missing genotypes.
+geno_test_noNA = t(geno_test) - colMeans(geno_test, na.rm = T)
+geno_test_noNA[is.na(geno_test_noNA)] = 0
+geno_test_noNA = t(geno_test_noNA)
+```
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+require(BGLR)
+fixedmod = model.matrix(~factor(dat_train$Sex) + factor(dat_train$batch))
+ETA.rr = list(list(X = fixedmod, model = "FIXED"), list(X = geno_train_noNA, model = "BRR")) #BRR means bayesian ridge regression
+fit.rr = BGLR(dat_train$BW,ETA=ETA.rr)
+
+# Output from BGLR is in a bit complicated object. You can look at the contents of the
+# "fit.rr" object with:
+str(fit.rr)
+# and some information is in a deeper level needing fit.rr$...[[2]]$...
+# Also when changing models, the place where information is stored can change and some
+# elements have the same name! (e.g., varB)
+#fit.rr$varE             # residual variance
+fit.rr$ETA[[2]]$varB    # the SNP variance
+hist(fit.rr$ETA[[2]]$b)      # the SNP effects
+#fit.rr$ETA[[1]]$b       # but these b's are sex and batch effects
+
+# You can make genomic predictions by multiplying test genotype data with the SNP effects
+# from BGLR; no selection of SNPs is used.
+
+# ----- GBLUP
+
+# BGLR and can also do multi-trait models and handle repeated observations (very common in plants).
+
+# Note: for GBLUP we use genotypes of train and test directly in the model, and a list of phenotypes
+# where the test-individuals have been set to missing.
+geno_all = dat[, 9:1821]
+geno_all_noNA = t(geno_all) - colMeans(geno_all, na.rm = T)
+geno_all_noNA[is.na(geno_all_noNA)] = 0
+geno_all_noNA = t(geno_all_noNA)
+# G matrix
+SNPp = colMeans(geno_all, na.rm = T)/2
+G = geno_all_noNA %*% t(geno_all_noNA) / sum(2*SNPp*(1-SNPp))
+# phenotypes list matching the whole data but with missings for test individuals
+pheno_misstest = dat$BW
+pheno_misstest[dat$CV1 == 2]=NA
+# also the fixed model part is built for whole data because sizes needs to match,
+# although all test animals get missing data
+fixedmod = model.matrix(~factor(dat$Sex) + factor(dat$batch))
+# BGLR gblup fit using G matrix with model "RKHS"
+ETA.gb = list(list(X = fixedmod, model = "FIXED"), list(K = G, model = "RKHS")) #RKHS means Bayesian reproducing kernel Hilbert spaces nregressions
+fit.gb = BGLR(pheno_misstest,ETA=ETA.gb)
+# variances from BGLR G-BLUP
+fit.gb$varE              # residual variance
+fit.gb$ETA[[2]]$varU     # the genomic variance
+fit.gb$ETA[[2]]$u        # the genomic values; no SNP effects!
+gebv = fit.gb$ETA[[2]]$u # genomic breeding values stored in a easier to use vector
+
+# checking predictions: u (GEBV's) is for all individuals train and test combined.
+# dat$BW is also all data for train and test combined.
+cor(dat$BW[dat$CV1==1],gebv[dat$CV1==1],use='pair') # correlation in trainig group (better)
+cor(dat$BW[dat$CV1==2],gebv[dat$CV1==2],use='pair') # correlation in test group
+
+```
+
+# K-fold Cross Validation Scheme
+```{r, message = FALSE, echo= FALSE, verbose= FALSE}
+#list of the correlations for the k folds
+cor_train = list() 
+cor_test = list()
+MSE = list()
+results = data.frame()
+CV10 = sample(seq(from = 1, to = 10, by = 1), size = nrow(dat), replace = TRUE)
+dat = cbind(CV10, dat)
+
+for(i in 1:10){
+
+  # We need to put missing phenotype data in the test individuals:
+  # phenotypes list matching the whole data but with missings for test individuals
+  pheno_misstest = dat$BW
+  pheno_misstest[dat$CV10 == i]=NA
+
+  # also the fixed model part is built for whole data because sizes needs   to match,
+  # although all test animals get missing data
+  fixedmod = model.matrix(~factor(dat$Sex) + factor(dat$batch))
+  # BGLR gblup fit using G matrix with model "RKHS"
+  ETA.gb = list(list(X = fixedmod, model = "FIXED"), list(K = G, model = "RKHS")) #RKHS means Bayesian reproducing kernel Hilbert spaces nregressions
+  fit.gb = BGLR(pheno_misstest,ETA=ETA.gb)
+  # variances from BGLR G-BLUP
+  fit.gb$varE              # residual variance
+  fit.gb$ETA[[2]]$varU     # the genomic variance
+  gebv = fit.gb$ETA[[2]]$u # genomic breeding values stored in a easier to use vector
+
+# checking predictions: u (GEBV's) is for all individuals train and test combined.
+  # dat$BW is also all data for train and test combined.
+  cor_train[i] = cor(dat$BW[dat$CV10!=i],gebv[dat$CV10!=i],use='pair') #   correlation in trainig group (better)
+  cor_test[i] = cor(dat$BW[dat$CV10 ==i],gebv[dat$CV10==i],use='pair') # correlation in test group
+
+}
+
+hist(rapply(cor_test, c), breaks = 10)
+hist(rapply(cor_train, c), breaks = 10)
+plot(rapply(cor_train, c), rapply(cor_test, c))
+var(rapply(cor_train, c))
+var(rapply(cor_test, c)) #Variance of the test is much higher
+mean(rapply(cor_test, c))
+mean(rapply(cor_train, c))
+
+```
+
+# Multi-trait analysis
+```{r}
+```
+
+# Matrix G
+```{r}
+dat = read.table("http://www.bayz.biz/mouse_allgeno.txt", header = T)
+genotypes = dat[,9:1821]
+geno_centered = scale(genotypes,scale=F, center=T) # Z
+
+# Inputting zero in the missing genotypes
+geno_centered[is.na(geno_centered)] <- 0 # Z correct for missing values
+mean(geno_centered) #almost zero
+Z = geno_centered %*% t(geno_centered)
+
+###############################################
+# First Method G = ZZ'/var
+###############################################
+p = as.vector(colMeans(genotypes,na.rm=T)/2)
+q = 1- p
+var = sum(2*p*q)
+G_1 = Z/var
+mean(diag(G_1))
+#Heatmap of G1
+heatmap(G_1)
+
+###############################################
+# PCA of G: Analyzing population structure
+###############################################
+require(fortify)
+PCA = princomp(G_1)
+library(ggfortify)
+autoplot(PCA)
+###############################################
+# Second Method G = ZDZ' where D = markers*(2pq)
+###############################################
+#install.packages('matrix')
+require(Matrix)
+x = 1.0/(ncol(genotypes)*2*p*q)
+D = Diagonal(ncol(genotypes), x = x)
+Z = geno_centered
+G_2 = Z%*%D%*%t(Z)
+mean(diag(G_2))
+heatmap(as.matrix(G_2))
+plot(diag(G_1), diag(G_2))
+PCA = princomp(G_2)
+autoplot(PCA)
+###############################################
+# Pedigree: probabilistic, pedigree anotation
+###############################################
+require(pedigree)
+require(synbreed)
+pedigree <- read.table("http://www.bayz.biz/mouseped_dmu.ped")
+ID <- pedigree$V1
+Par1 <- pedigree$V2
+Par2 <- pedigree$V3
+A <- create.pedigree(ID,Par1,Par2, add.ancestors = F )
+#plot(A)
+makeA(A, which = is.element(ID,ID))
+A <- read.table(file="A.txt")
+library(Matrix)
+A <- sparseMatrix(i = A$V1,
+                  j = A$V2,
+                  x = A$V3,
+                  dims = c(nrow(pedigree), nrow(pedigree)),
+                  dimnames= list(c(pedigree$ID),c(pedigree$ID)))
+A <- as.matrix(A)
+heatmap(A)
+```
+
+# Plotting the Distributions
+```{r}
+plot(function(x) dnorm(x, log = FALSE), -6, 6,
+     main = "log { Normal density }")
+
+#
+lines(seq(-6,6,0.1),exp(-seq(-6, 6, 0.1)^2))
+
+
+    
+    
+```
+#The effect of sample size
+```{r} 
+
+
+```
+
